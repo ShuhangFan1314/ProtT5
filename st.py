@@ -1,69 +1,47 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 from transformers import T5Tokenizer, T5EncoderModel
+from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import KernelPCA
-from sklearn.ensemble import RandomForestRegressor
-from scipy.stats import pearsonr
-import joblib
+from sklearn.externals import joblib
 import torch
-import os
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
+import re
 
-# 加载模型和tokenizer
-@st.cache_resource
-def load_models():
+# 加载模型和工具
+@st.cache(allow_output_mutation=True)
+def load_resources():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_link = "Rostlab/prot_t5_xl_half_uniref50-enc"
-    model = T5EncoderModel.from_pretrained(model_link).to(device).eval()
-    tokenizer = T5Tokenizer.from_pretrained(model_link, do_lower_case=False, legacy=True)
-    return model, tokenizer
+    model = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc").to(device).eval()
+    tokenizer = T5Tokenizer.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc", do_lower_case=False, legacy=True)
+    scaler = StandardScaler()
+    kpca = KernelPCA()  # 初始化PCA，如果要使用预训练的PCA模型，则从文件加载
+    # 加载本地保存的随机森林模型
+    rf_model = joblib.load('random_forest_model.pkl')
+    return model, tokenizer, scaler, kpca, rf_model
 
-model, tokenizer = load_models()
+model, tokenizer, scaler, kpca, rf_model = load_resources()
 
-# 处理序列的函数保持不变...
+def process_single_sequence(seq, model, tokenizer):
+    seq = " ".join(list(re.sub(r"[UZOB]", "X", seq)))
+    ids = tokenizer.encode_plus(seq, add_special_tokens=True, padding="max_length", max_length=512, truncation=True)
+    input_ids = torch.tensor(ids['input_ids']).unsqueeze(0).to(model.device)
+    attention_mask = torch.tensor(ids['attention_mask']).unsqueeze(0).to(model.device)
+    with torch.no_grad():
+        embedding_repr = model(input_ids=input_ids, attention_mask=attention_mask)
+    return embedding_repr.last_hidden_state.squeeze().mean(dim=0).tolist()
 
-# Streamlit应用主体
-def main():
-    st.title("Protein Feature Extraction & Model Evaluation")
+st.title("基于蛋白质序列的粘度预测")
+
+sequence_input = st.text_area("请输入蛋白质序列")
+
+if sequence_input:
+    # 处理序列
+    features = process_single_sequence(sequence_input, model, tokenizer)
+    # 特征缩放
+    scaled_features = scaler.transform([features])
+    # 使用PCA变换
+    transformed_features = kpca.transform(scaled_features)
+    # 使用随机森林模型进行预测
+    predicted_viscosity = rf_model.predict(transformed_features)
     
-    uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
-    
-    if uploaded_file is not None:
-        data = pd.read_csv(uploaded_file)
-        st.write("Data preview:")
-        st.write(data.head())
-        
-        # 用户可以选择PCA的组件数量
-        n_components = st.slider("Select Number of PCA Components", min_value=1, max_value=32, value=10)
-        
-        # 特征提取逻辑可以在这里调用，但注意实际应用中可能需要考虑计算资源和时间限制
-        
-        # 假设我们已经通过某种方式（可能是预计算或简化逻辑）获得了处理后的特征数据
-        # X = ...  # 特征数据
-        # y = ...  # 目标变量数据
-        
-        # 如果需要执行PCA和模型训练，这里可以添加逻辑，但请记住实时训练可能不适合Web应用
-        
-        # 展示PCA结果或模型评估结果（这里以模拟数据为例）
-        if st.button("Evaluate Model"):
-            # 假设我们有一个预训练好的模型或简化版本的模型评估逻辑
-            # 加载预训练模型或结果
-            result_path = 'result_component_32.pkl'
-            if os.path.exists(result_path):
-                results = joblib.load(result_path)
-                train_pcc = results.get('Train_PCC', None)
-                test_pcc = results.get('Test_PCC', None)
-                
-                if train_pcc is not None and test_pcc is not None:
-                    st.write(f"PCA Components: {n_components}")
-                    st.write(f"Training Set Pearson Correlation Coefficient: {train_pcc}")
-                    st.write(f"Test Set Pearson Correlation Coefficient: {test_pcc}")
-                else:
-                    st.warning("No precomputed results found for the specified configuration.")
-            else:
-                st.error("The specified result file does not exist.")
-
-if __name__ == "__main__":
-    main()
+    st.write(f"预测的粘度值为: {predicted_viscosity[0]}")
