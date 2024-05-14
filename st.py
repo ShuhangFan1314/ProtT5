@@ -50,7 +50,7 @@ def main():
         if st.button("Evaluate Model"):
             # 假设我们有一个预训练好的模型或简化版本的模型评估逻辑
             # 加载预训练模型或结果
-            result_path = '../rf_pca_tuning_results/result_component_32.pkl'
+            result_path = 'result_component_32.pkl'
             if os.path.exists(result_path):
                 results = joblib.load(result_path)
                 train_pcc = results.get('Train_PCC', None)
